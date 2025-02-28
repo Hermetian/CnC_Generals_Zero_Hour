@@ -316,11 +316,6 @@ LRESULT CALLBACK WndProc( HWND hWnd, UINT message,
 			}
 		}
 		
-#ifdef DO_COPY_PROTECTION
-		// Check for messages from the launcher
-		CopyProtect::checkForMessage(message, lParam);
-#endif
-
 #ifdef	DEBUG_WINDOWS_MESSAGES
 		static msgCount=0;
 		char testString[256];
@@ -963,19 +958,6 @@ Int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
 			AsciiString(VERSION_BUILDUSER), AsciiString(VERSION_BUILDLOC),
 			AsciiString(__TIME__), AsciiString(__DATE__));
 
-#ifdef DO_COPY_PROTECTION
-		if (!CopyProtect::isLauncherRunning())
-		{
-			DEBUG_LOG(("Launcher is not running - about to bail\n"));
-			delete TheVersion;
-			TheVersion = NULL;
-			shutdownMemoryManager();
-			DEBUG_SHUTDOWN();
-			return 0;
-		}
-#endif
-
-
 		//Create a mutex with a unique name to Generals in order to determine if
 		//our app is already running.
 		//WARNING: DO NOT use this number for any other application except Generals.
@@ -1003,27 +985,10 @@ Int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
 		}
 		DEBUG_LOG(("Create GeneralsMutex okay.\n"));
 
-#ifdef DO_COPY_PROTECTION
-		if (!CopyProtect::notifyLauncher())
-		{
-			DEBUG_LOG(("Could not talk to the launcher - about to bail\n"));
-			delete TheVersion;
-			TheVersion = NULL;
-			shutdownMemoryManager();
-			DEBUG_SHUTDOWN();
-			return 0;
-		}
-#endif
-
 		DEBUG_LOG(("CRC message is %d\n", GameMessage::MSG_LOGIC_CRC));
 
 		// run the game main loop
 		GameMain(argc, argv);
-
-#ifdef DO_COPY_PROTECTION
-		// Clean up copy protection
-		CopyProtect::shutdown();
-#endif
 
 		delete TheVersion;
 		TheVersion = NULL;

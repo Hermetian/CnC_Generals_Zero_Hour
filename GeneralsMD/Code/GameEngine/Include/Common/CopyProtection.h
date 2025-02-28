@@ -33,23 +33,17 @@
 #define COPYPROTECTION_H
 
 // Comment out the following line to disable copy protection checks
-#define DO_COPY_PROTECTION
+// #define DO_COPY_PROTECTION
 
-#ifdef DO_COPY_PROTECTION
-
+// Simple implementation that always allows the game to run
 class CopyProtect
-	{
-	public:
-		static Bool isLauncherRunning(void);
-		static Bool notifyLauncher(void);
-		static void checkForMessage(UINT message, LPARAM lParam);
-		static Bool validate(void);
-		static void shutdown(void);
-
-	private:	
-		static LPVOID s_protectedData;
-	};
-
-#endif // DO_COPY_PROTECTION
+{
+public:
+	static Bool isLauncherRunning(void) { return TRUE; }
+	static Bool notifyLauncher(void) { return TRUE; }
+	static void checkForMessage(UINT message, LPARAM lParam) { }
+	static Bool validate(void) { return TRUE; }
+	static void shutdown(void) { }
+};
 
 #endif // COPYPROTECTION_H

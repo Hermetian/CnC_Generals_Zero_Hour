@@ -32,7 +32,1427 @@
 #include "Common/AudioAffect.h"
 #include "Common/AudioHandleSpecialValues.h"
 #include "Common/BuildAssistant.h"
-#include "Common/CopyProtection.h"
+#include "Common/CRCDebug.h"
+#include "Common/GameAudio.h"
+#include "Common/GameEngine.h"
+#include "Common/GameLOD.h"
+#include "Common/GameState.h"
+#include "Common/INI.h"
+#include "Common/LatchRestore.h"
+#include "Common/MapObject.h"
+#include "Common/MultiplayerSettings.h"
+#include "Common/PerfTimer.h"
+#include "Common/Player.h"
+#include "Common/PlayerList.h"
+#include "Common/PlayerTemplate.h"
+#include "Common/Radar.h"
+#include "Common/RandomValue.h"
+#include "Common/Recorder.h"
+#include "Common/StatsCollector.h"
+#include "Common/ThingFactory.h"
+#include "Common/Team.h"
+#include "Common/ThingTemplate.h"
+#include "GameClient/Water.h"
+#include "GameClient/Snow.h"
+#include "Common/WellKnownKeys.h"
+#include "Common/Xfer.h"
+#include "Common/XferCRC.h"
+#include "Common/XferDeepCRC.h"
+#include "Common/GameSpyMiscPreferences.h"
+
+#include "GameClient/ControlBar.h"
+#include "GameClient/Drawable.h"
+#include "GameClient/GameClient.h"
+#include "GameClient/GameText.h"
+#include "GameClient/GUICallbacks.h"
+#include "GameClient/InGameUI.h"
+#include "GameClient/LoadScreen.h"
+#include "GameClient/MapUtil.h"
+#include "GameClient/Mouse.h"
+#include "GameClient/ParticleSys.h"
+#include "GameClient/TerrainVisual.h"
+#include "GameClient/View.h"
+#include "GameClient/ControlBar.h"
+#include "GameClient/CampaignManager.h"
+#include "GameClient/GameWindowTransitions.h"
+
+#include "GameLogic/AI.h"
+#include "GameLogic/AIPathfind.h"
+#include "GameLogic/CaveSystem.h"
+#include "GameLogic/CrateSystem.h"
+#include "GameLogic/FPUControl.h"
+#include "GameLogic/GameLogic.h"
+#include "GameLogic/Locomotor.h"
+#include "GameLogic/Object.h"
+#include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Module/BodyModule.h"
+#include "GameLogic/Module/CreateModule.h"
+#include "GameLogic/Module/DestroyModule.h"
+#include "GameLogic/Module/OpenContain.h"
+#include "GameLogic/PartitionManager.h"
+#include "GameLogic/PolygonTrigger.h"
+#include "GameLogic/ScriptActions.h"
+#include "GameLogic/ScriptConditions.h"
+#include "GameLogic/ScriptEngine.h"
+#include "GameLogic/SidesList.h"
+#include "GameLogic/VictoryConditions.h"
+#include "GameLogic/Weapon.h"
+#include "GameLogic/GhostObject.h"
+
+#include "Common/DataChunk.h"
+#include "GameLogic/Scripts.h"
+
+#include "GameNetwork/GameSpy/BuddyThread.h"
+#include "GameNetwork/GameSpy/PeerDefs.h"
+#include "GameNetwork/GameSpy/ThreadUtils.h"
+#include "GameNetwork/LANAPICallbacks.h"
+#include "GameNetwork/NetworkInterface.h"
+#include "GameNetwork/GameSpy/PersistentStorageThread.h"
+
+#include <rts/profile.h>
+
+DECLARE_PERF_TIMER(SleepyMaintenance)
+
+#include "Common/UnitTimings.h" //Contains the DO_UNIT_TIMINGS define jba.		 
+// If defined, the game times various units.
+#ifdef DO_UNIT_TIMINGS
+#pragma MESSAGE("*** WARNING *** DOING DO_UNIT_TIMINGS!!!!")
+Bool g_UT_gotUnit = false;
+const ThingTemplate *g_UT_curThing = NULL;
+Bool g_UT_startTiming = false;
+FILE *g_UT_timingLog=NULL;
+FILE *g_UT_commaLog=NULL;
+// Note - this is only for gathering timing data!  DO NOT DO THIS IN REGULAR CODE!!!  JBA
+#define BRUTAL_TIMING_HACK
+#include "../../gameenginedevice/include/W3DDevice/GameClient/Module/W3DModelDraw.h"
+extern void externalAddTree(Coord3D location, Real scale, Real angle, AsciiString name);
+#endif
+
+
+#ifdef _INTERNAL
+// for occasional debugging...
+//#pragma optimize("", off)
+//#pragma MESSAGE("************************************** WARNING, optimization disabled for debugging purposes")
+#endif
+
+
+
+
+// I'm making this larger now that we know how big our maps are going to be. 
+enum { OBJ_HASH_SIZE	= 8192 };
+
+/// The GameLogic singleton instance
+GameLogic *TheGameLogic = NULL;
+
+static void findAndSelectCommandCenter(Object *obj, void* alreadyFound);
+
+
+// ------------------------------------------------------------------------------------------------
+/** This enum is for loading screen bar progress */
+// ------------------------------------------------------------------------------------------------
+enum
+{
+	LOAD_PROGRESS_START =0,
+	LOAD_PROGRESS_POST_PARTICLE_INI_LOAD = LOAD_PROGRESS_START + 1,
+	LOAD_PROGRESS_POST_LOAD_MAP = LOAD_PROGRESS_POST_PARTICLE_INI_LOAD + 1,
+	LOAD_PROGRESS_SIDE_POPULATION = LOAD_PROGRESS_POST_LOAD_MAP + 1,  // Increment the next one by at least MAX_SLOTS
+	LOAD_PROGRESS_POST_SIDE_LIST_INIT = LOAD_PROGRESS_SIDE_POPULATION + 1 + MAX_SLOTS,
+	LOAD_PROGRESS_POST_PLAYER_LIST_RESET = LOAD_PROGRESS_POST_SIDE_LIST_INIT + 1,
+	LOAD_PROGRESS_POST_SCRIPT_ENGINE_NEW_MAP = LOAD_PROGRESS_POST_PLAYER_LIST_RESET + 1,
+	LOAD_PROGRESS_POST_VICTORY_CONDITION_SETUP = LOAD_PROGRESS_POST_SCRIPT_ENGINE_NEW_MAP + 2,
+	LOAD_PROGRESS_POST_VICTORY_CONDITION_SET_VICTORY_CONDITION = LOAD_PROGRESS_POST_VICTORY_CONDITION_SETUP + 1,
+	LOAD_PROGRESS_POST_GHOST_OBJECT_MANAGER_RESET = LOAD_PROGRESS_POST_VICTORY_CONDITION_SET_VICTORY_CONDITION + 1,
+	LOAD_PROGRESS_POST_TERRAIN_LOGIC_NEW_MAP = LOAD_PROGRESS_POST_GHOST_OBJECT_MANAGER_RESET + 1,
+	LOAD_PROGRESS_POST_BRIDGE_LOAD = LOAD_PROGRESS_POST_TERRAIN_LOGIC_NEW_MAP + 1,
+	LOAD_PROGRESS_POST_PATHFINDER_NEW_MAP = LOAD_PROGRESS_POST_BRIDGE_LOAD + 1,
+
+	LOAD_PROGRESS_LOOP_ALL_THE_FREAKN_OBJECTS = LOAD_PROGRESS_POST_BRIDGE_LOAD + 1,
+	LOAD_PROGRESS_MAX_ALL_THE_FREAKN_OBJECTS = 80,// THE END OF THE BIG ASS PROGRESS PAUSE
+
+	LOAD_PROGRESS_LOOP_INITIAL_NETWORK_BUILDINGS = LOAD_PROGRESS_MAX_ALL_THE_FREAKN_OBJECTS + 1,  // Increment the next one by at least MAX_SLOTS
+	LOAD_PROGRESS_POST_INITIAL_NETWORK_BUILDINGS = LOAD_PROGRESS_LOOP_INITIAL_NETWORK_BUILDINGS + MAX_SLOTS + 1,
+
+	LOAD_PROGRESS_POST_PRELOAD_ASSETS = LOAD_PROGRESS_POST_INITIAL_NETWORK_BUILDINGS + 1,
+	LOAD_PROGRESS_POST_STARTING_CAMERA = LOAD_PROGRESS_POST_PRELOAD_ASSETS + 1,
+	LOAD_PROGRESS_POST_STARTING_CAMERA_2 = LOAD_PROGRESS_POST_STARTING_CAMERA + 1,
+	LOAD_PROGRESS_END = 100,
+};
+
+// ------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------
+static Waypoint * findNamedWaypoint(AsciiString name)
+{
+	for (Waypoint *way = TheTerrainLogic->getFirstWaypoint(); way; way = way->getNext())
+	{
+		if (way->getName() == name)
+		{
+			return way;
+		}
+	}
+	return NULL;
+}
+
+// ------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------
+void setFPMode( void )
+{
+  // Set floating point round mode to CHOP, which only comes
+  // into play when precision is exceeded.  This is necessary
+  // for the fast float to int routines used elsewhere in the
+  // system.
+	//
+	// Also set floating point precision to low.  It could be
+	// anything as long as it is consistent, really, but this
+	// is in the (vain?) hope of any slight speed boost.
+	//
+	_fpreset();
+
+	UnsignedInt curVal = _statusfp();
+	UnsignedInt newVal = curVal;
+	newVal = (newVal & ~_MCW_RC) | (_RC_NEAR & _MCW_RC);
+	//newVal = (newVal & ~_MCW_RC) | (_RC_CHOP & _MCW_RC);
+	newVal = (newVal & ~_MCW_PC) | (_PC_24   & _MCW_PC);
+
+	_controlfp(newVal, _MCW_PC | _MCW_RC);
+}
+
+// ------------------------------------------------------------------------------------------------
+/** GameLogic class constructor */
+// ------------------------------------------------------------------------------------------------
+GameLogic::GameLogic( void )
+{
+	//Added By Sadullah Nader
+	//Initializations missing and necessary 
+	m_background = NULL;
+	m_CRC = 0;
+	m_isInUpdate = FALSE;
+
+	m_rankPointsToAddAtGameStart = 0;
+
+	for(Int i = 0; i < MAX_SLOTS; i++)
+	{
+		m_progressComplete[i] = FALSE;
+		m_progressCompleteTimeout[i] = 0;
+	}
+
+	m_shouldValidateCRCs = FALSE;
+	
+	m_startNewGame = FALSE;
+	//
+
+	m_frame = 0;
+	m_frameObjectsChangedTriggerAreas = 0;
+	m_width = 0;
+	m_height = 0;
+	m_objList = NULL;
+	m_curUpdateModule = NULL;
+	m_nextObjID = INVALID_ID;
+	m_startNewGame = FALSE;
+	m_gameMode = GAME_NONE;
+	m_rankLevelLimit = 1000;
+	m_gamePaused = FALSE;
+	m_inputEnabledMemory = TRUE;
+	m_mouseVisibleMemory = TRUE;
+	m_loadScreen = NULL;
+	m_forceGameStartByTimeOut = FALSE;
+#ifdef DUMP_PERF_STATS
+	m_overallFailedPathfinds = 0;
+#endif
+
+	m_loadingMap = FALSE;
+	m_loadingSave = FALSE;
+	m_clearingGameData = FALSE;
+}
+
+// ------------------------------------------------------------------------------------------------
+/** Utility function to set class variables to default values. */
+// ------------------------------------------------------------------------------------------------
+void GameLogic::setDefaults( Bool loadingSaveGame )
+{
+	m_frame = 0;
+	m_width = DEFAULT_WORLD_WIDTH;
+	m_height = DEFAULT_WORLD_HEIGHT;
+	m_objList = NULL;
+#ifdef ALLOW_NONSLEEPY_UPDATES
+	m_normalUpdates.clear();
+#endif
+	for (std::vector<UpdateModulePtr>::iterator it = m_sleepyUpdates.begin(); it != m_sleepyUpdates.end(); ++it)
+	{
+		(*it)->friend_setIndexInLogic(-1);
+	}
+	m_sleepyUpdates.clear();
+	m_curUpdateModule = NULL;
+
+	//
+	// only reset the next object ID allocater counter when we're not loading a save game.
+	// for save games, we read this value out of the save game file and it is important
+	// that we preserve it as we load and execute the game
+	//
+	if( loadingSaveGame == FALSE )
+		m_nextObjID = (ObjectID)1;
+
+}
+
+//-------------------------------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------------------
+Bool GameLogic::isInSinglePlayerGame( void )
+{
+	return (m_gameMode == GAME_SINGLE_PLAYER ||
+		(TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_PLAYBACK && TheRecorder->getGameMode() == GAME_SINGLE_PLAYER));
+}
+
+
+//-------------------------------------------------------------------------------------------------
+/** Destroy all objects immediately */
+//-------------------------------------------------------------------------------------------------
+void GameLogic::destroyAllObjectsImmediate()
+{
+	// destroy all remaining objects
+	Object *obj;
+	Object *nextObj;
+	for( obj = m_objList; obj; obj = nextObj )
+	{
+		nextObj = obj->getNextObject();
+		destroyObject( obj );
+	}
+
+	// process the destroy list immediately
+	processDestroyList();
+	DEBUG_ASSERTCRASH( m_objList == NULL, ("destroyAllObjectsImmediate: Object list not cleared\n") );
+
+}  // end destroyAllObjectsImmediate
+
+//-------------------------------------------------------------------------------------------------
+/**GameLogic class destructor, the destruction order should mirror the
+ * initialization order */
+// ------------------------------------------------------------------------------------------------
+GameLogic::~GameLogic()
+{
+
+	// clear any object TOC we might have
+	m_objectTOC.clear();
+
+	if (m_background)
+	{
+		m_background->destroyWindows();
+		m_background->deleteInstance();
+		m_background = NULL;
+	}
+
+	// destroy all remaining objects
+	destroyAllObjectsImmediate();
+
+	// delete the logical terrain
+	delete TheTerrainLogic;
+	TheTerrainLogic = NULL;
+
+	delete TheGhostObjectManager;
+	TheGhostObjectManager=NULL;
+
+	// delete the partition manager
+	delete ThePartitionManager;
+	ThePartitionManager = NULL;
+
+	delete TheScriptActions;
+	TheScriptActions = NULL;
+
+	delete TheScriptConditions;
+	TheScriptConditions = NULL;
+
+	// delete the Script Engine
+	delete TheScriptEngine;
+	TheScriptEngine = NULL;
+	
+	// Null out TheGameLogic
+	TheGameLogic = NULL;
+}
+
+// ------------------------------------------------------------------------------------------------
+/** (re)initialize the instance. */
+// ------------------------------------------------------------------------------------------------
+void GameLogic::init( void )
+{
+
+	setFPMode();
+
+	/// @todo Clear object and destroy lists
+	setDefaults( FALSE );
+
+	// create the partition manager
+	ThePartitionManager = NEW PartitionManager;
+	ThePartitionManager->init();
+	ThePartitionManager->setName("ThePartitionManager");
+
+
+	// Create system for holding deleted objects that are
+	// still in the partition manager because player has a fogged
+	// view of them.
+	TheGhostObjectManager = createGhostObjectManager();
+
+	// create the terrain logic
+	TheTerrainLogic = createTerrainLogic();
+	TheTerrainLogic->init();
+	TheTerrainLogic->setName("TheTerrainLogic");
+
+	// Create script engine system.
+	TheScriptActions = NEW ScriptActions;		 // Basically, a subsystem of TheScriptEngine.
+	TheScriptConditions = NEW ScriptConditions;	 // Basically, a subsystem of TheScriptEngine.
+	TheScriptEngine = NEW ScriptEngine;
+	TheScriptEngine->init();
+	TheScriptEngine->setName("TheScriptEngine");
+
+	// create a team for the player
+	//DEBUG_ASSERTCRASH(ThePlayerList, ("null ThePlayerList"));
+	//ThePlayerList->setLocalPlayer(0);
+
+	m_CRC = 0;
+	m_gamePaused = FALSE;
+	m_inputEnabledMemory = TRUE;
+	m_mouseVisibleMemory = TRUE;
+	for(Int i = 0; i < MAX_SLOTS; ++i)
+	{
+		m_progressComplete[i] = FALSE;
+		m_progressCompleteTimeout[i] = 0;
+	}
+	m_forceGameStartByTimeOut = FALSE;
+
+	m_isScoringEnabled = TRUE;
+	m_showBehindBuildingMarkers = TRUE;
+	m_drawIconUI = TRUE;
+	m_showDynamicLOD = TRUE;
+	m_scriptHulkMaxLifetimeOverride = -1;
+	
+	m_isInUpdate = FALSE;
+
+	m_rankPointsToAddAtGameStart = 0;
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Reset the game logic systems */
+//-------------------------------------------------------------------------------------------------
+void GameLogic::reset( void )
+{
+	m_thingTemplateBuildableOverrides.clear();
+	m_controlBarOverrides.clear();
+
+	// set the hash to be rather large. We need to optimize this value later.
+//	m_objHash.clear();
+//	m_objHash.resize(OBJ_HASH_SIZE);
+	m_objVector.clear();
+	m_objVector.resize(OBJ_HASH_SIZE, NULL);
+
+	m_gamePaused = FALSE;
+	m_inputEnabledMemory = TRUE;
+	m_mouseVisibleMemory = TRUE;
+	setFPMode();
+
+	// destroy all objects
+	destroyAllObjectsImmediate();
+
+	m_nextObjID = (ObjectID)1;
+
+	m_frameObjectsChangedTriggerAreas = 0;
+
+	TheGhostObjectManager->reset();
+	ThePartitionManager->reset();
+	TheTerrainLogic->reset();
+	TheAI->reset();
+	TheScriptEngine->reset();
+
+	m_CRC = 0;
+	for(Int i = 0; i < MAX_SLOTS; ++i)
+	{
+		m_progressComplete[i] = FALSE;
+		m_progressCompleteTimeout[i] = 0;
+	}
+	m_forceGameStartByTimeOut = FALSE;
+
+	if(TheStatsCollector)
+	{
+		delete TheStatsCollector;
+		TheStatsCollector = NULL;
+	}
+
+	// clear any table of contents we have
+	m_objectTOC.clear();
+
+	setDefaults( FALSE );
+
+	m_isScoringEnabled = TRUE;
+	m_showBehindBuildingMarkers = TRUE;
+	m_drawIconUI = TRUE;
+	m_showDynamicLOD = TRUE;
+	m_scriptHulkMaxLifetimeOverride = -1;
+
+	// Clean up any water transparency overrides that were generated for this map.
+	WaterTransparencySetting *wt = (WaterTransparencySetting*) TheWaterTransparency.getNonOverloadedPointer();
+	TheWaterTransparency = (WaterTransparencySetting*) wt->deleteOverrides();
+
+	// Clean up any weather overrides that were generated for this map.
+	WeatherSetting *ws = (WeatherSetting*) TheWeatherSetting.getNonOverloadedPointer();
+	TheWeatherSetting = (WeatherSetting*) ws->deleteOverrides();
+
+	m_rankPointsToAddAtGameStart = 0;
+}  // end reset
+
+static Object * placeObjectAtPosition(Int slotNum, AsciiString objectTemplateName, Coord3D& pos, Player *pPlayer,
+																	const PlayerTemplate *pTemplate)
+{
+	const ThingTemplate* btt = TheThingFactory->findTemplate(objectTemplateName);
+
+	DEBUG_ASSERTCRASH(btt, ("TheThingFactory didn't find a template in placeObjectAtPosition()") );
+
+	Object *obj = TheThingFactory->newObject( btt, pPlayer->getDefaultTeam() );
+	DEBUG_ASSERTCRASH(obj, ("TheThingFactory didn't give me a valid Object for player %d's (%ls) starting building\n",
+		slotNum, pTemplate->getDisplayName().str()));
+	if (obj)
+	{
+		obj->setOrientation(obj->getTemplate()->getPlacementViewAngle());	
+		obj->setPosition( &pos );
+
+		//DEBUG_LOG(("Placed a starting building for %s at waypoint %s\n", playerName.str(), waypointName.str()));
+		CRCDEBUG_LOG(("Placed an object for %ls at pos (%g,%g,%g)\n", pPlayer->getPlayerDisplayName().str(),
+			pos.x, pos.y, pos.z));
+		DUMPCOORD3D(&pos);
+
+		Team *team = pPlayer->getDefaultTeam();
+		// Now onCreates were called at the constructor.  This magically created
+		// thing needs to be considered as Built for Game specific stuff.
+		for (BehaviorModule** m = obj->getBehaviorModules(); *m; ++m)
+		{
+			CreateModuleInterface* create = (*m)->getCreate();
+			if (!create)
+				continue;
+			create->onBuildComplete();
+		}
+
+		// Since the team now has members, activate it.
+		// srj sez: team should not be null, but could be for ill-formed user maps. so don't crash.
+		if (team)
+			team->setActive();
+		TheAI->pathfinder()->addObjectToPathfindMap(obj);
+		if (obj->getAIUpdateInterface() && !obj->isKindOf(KINDOF_IMMOBILE)) {
+			CRCDEBUG_LOG(("Not immobile - adjusting dest\n"));
+			if (TheAI->pathfinder()->adjustDestination(obj, obj->getAIUpdateInterface()->getLocomotorSet(), &pos)) {
+				DUMPCOORD3D(&pos);
+				TheAI->pathfinder()->updateGoal(obj, &pos, LAYER_GROUND);	// Units always start on the ground for now.  jba.
+				obj->setPosition( &pos );
+			}
+		}
+	}
+
+	return obj;
+}
+
+static void placeNetworkBuildingsForPlayer(Int slotNum, const GameSlot *pSlot, Player *pPlayer, const PlayerTemplate *pTemplate)
+{
+	Int startPos = pSlot->getStartPos();
+	AsciiString waypointName;
+	waypointName.format("Player_%d_Start", startPos+1); // start pos waypoints are 1-based
+
+	AsciiString rallyWaypointName;
+	rallyWaypointName.format("Player_%d_Rally", startPos+1); // start pos waypoints are 1-based
+
+	Waypoint *waypoint = findNamedWaypoint(waypointName);
+	Waypoint *rallyWaypoint = findNamedWaypoint(rallyWaypointName);
+	DEBUG_ASSERTCRASH(waypoint, ("Player %d has no starting waypoint (Player_%d_Start)\n", slotNum, startPos));
+	if (!waypoint)
+		return;
+
+	Coord3D pos = *waypoint->getLocation();
+	pos.z = TheTerrainLogic->getGroundHeight( pos.x, pos.y );
+
+	AsciiString buildingTemplateName = pTemplate->getStartingBuilding();
+
+	DEBUG_ASSERTCRASH(!buildingTemplateName.isEmpty(), ("no starting building type for player %d (playertemplate %ls)\n",
+		slotNum, pTemplate->getDisplayName().str()));
+	if (buildingTemplateName.isEmpty())
+		return;
+
+	DEBUG_LOG(("Placing starting building at waypoint %s\n", waypointName.str()));
+	Object *conYard = placeObjectAtPosition(slotNum, buildingTemplateName, pos, pPlayer, pTemplate);
+
+	if (!conYard)
+		return;
+
+	pPlayer->onStructureCreated(NULL, conYard);
+	pPlayer->onStructureConstructionComplete(NULL, conYard, FALSE);
+
+	//pos.x -= conYard->getGeometryInfo().getBoundingSphereRadius()/2;
+	pos.y -= conYard->getGeometryInfo().getBoundingSphereRadius()/2;
+	pos.z = TheTerrainLogic->getGroundHeight( pos.x, pos.y );
+
+	if (rallyWaypoint)
+	{
+		pos = *rallyWaypoint->getLocation();
+		pos.z = TheTerrainLogic->getGroundHeight( pos.x, pos.y );
+	}
+
+	for (Int i=0; i<MAX_MP_STARTING_UNITS; ++i)
+	{
+		AsciiString objName = pTemplate->getStartingUnit(i);
+		if (objName.isNotEmpty())
+		{
+			Coord3D objPos = pos;
+			FindPositionOptions options;
+			options.minRadius = conYard->getGeometryInfo().getBoundingSphereRadius() * 0.7f;
+			options.maxRadius = conYard->getGeometryInfo().getBoundingSphereRadius() * 1.3f;
+			DEBUG_LOG(("Placing starting object %d (%s)\n", i, objName.str()));
+			ThePartitionManager->update();
+			Bool foundPos = ThePartitionManager->findPositionAround(&pos, &options, &objPos);
+			if (foundPos)
+			{
+				Object *unit = placeObjectAtPosition(slotNum, objName, objPos, pPlayer, pTemplate);
+				if (unit) {
+					pPlayer->onUnitCreated(NULL, unit);
+				}
+			}
+			else
+			{
+				DEBUG_LOG(("Could not find position\n"));
+			}
+		}
+	}
+}
+
+// ------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------
+LoadScreen *GameLogic::getLoadScreen( Bool loadingSaveGame )
+{
+	switch (m_gameMode) 
+	{
+	case GAME_SHELL:
+		return NEW ShellGameLoadScreen;
+		break;                         
+	case GAME_SINGLE_PLAYER:
+	{
+		Campaign* currentCampaign = TheCampaignManager->getCurrentCampaign();
+		if( currentCampaign && loadingSaveGame == FALSE )
+		{
+			if ( currentCampaign->m_isChallengeCampaign) 
+			{
+				return NEW ChallengeLoadScreen;
+			}
+			return NEW SinglePlayerLoadScreen;
+		}
+		else
+			return NEW ShellGameLoadScreen;
+		break;
+	}
+	case GAME_SKIRMISH:
+		return NEW MultiPlayerLoadScreen;
+		break;
+	case GAME_LAN:
+		return NEW MultiPlayerLoadScreen;
+		break;
+	case GAME_REPLAY:
+		return NEW ShellGameLoadScreen;
+		break;
+	case GAME_INTERNET:
+		return NEW GameSpyLoadScreen;
+		break;
+	case GAME_NONE:
+	default:
+		return NULL;
+	}
+
+}
+
+// ------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------
+void handleNameChange( MapObject *mapObj )
+{
+	if( !mapObj->getName().compare( "AmericaTankLeopard" ) )
+	{
+		mapObj->setName( "AmericaTankCrusader" );
+		const ThingTemplate *thingTemplate = TheThingFactory->findTemplate( mapObj->getName() );
+		mapObj->setThingTemplate( thingTemplate );
+	}
+	if( !mapObj->getName().compare( "AmericaVehicleHumVee" ) )
+	{
+		mapObj->setName( "AmericaVehicleHumvee" );
+		const ThingTemplate *thingTemplate = TheThingFactory->findTemplate( mapObj->getName() );
+		mapObj->setThingTemplate( thingTemplate );
+	}
+}
+
+// ------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------
+static void checkForDuplicateColors( GameInfo *game )
+{
+	if(!game)
+		return;
+	Int i;
+
+	// In QuickMatch, people can possibly set preferred color and house.
+	// Here, we check for collisions in the color choice.  If there is a
+	// collision, the first player will get the color, and the other(s)
+	// will map to random.
+	for (i=MAX_SLOTS-1; i>=0; --i)
+	{
+		GameSlot *slot = game->getSlot(i);
+
+		if (!slot || !slot->isOccupied())
+			continue;
+
+		Int colorIdx = slot->getColor();
+		if (colorIdx < 0 || colorIdx >= TheMultiplayerSettings->getNumColors())
+			continue; // don't need to fix up random ones
+
+		slot->setColor(-1);
+		if (!game->isColorTaken(colorIdx))
+		{
+			// we were the only one using the color.  it is safe to keep using it.
+			slot->setColor(colorIdx);
+		}
+		else if (colorIdx >= 0)
+		{
+			DEBUG_LOG(("Clearing color %d for player %d\n", colorIdx, i));
+		}
+	}
+}
+
+// ------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------
+static void populateRandomSideAndColor( GameInfo *game )
+{
+	if(!game)
+		return;
+	Int i;
+
+#define MORE_RANDOM
+#ifdef MORE_RANDOM
+	std::vector<Int> startSlots;
+	for (i = 0; i < ThePlayerTemplateStore->getPlayerTemplateCount(); ++i)
+	{
+		const PlayerTemplate* ptTest = ThePlayerTemplateStore->getNthPlayerTemplate(i);
+		if (!ptTest || ptTest->getStartingBuilding().isEmpty())
+			continue;
+
+		if ( game->oldFactionsOnly() && !ptTest->isOldFaction() )
+		  continue;
+
+		// Prevent from selecting the disabled Generals.
+		// This is also enforced at GUI setup (GUIUtil.cpp).
+		// @todo: unlock these when something rad happens
+		Bool disallowLockedGenerals = TRUE;
+		const GeneralPersona *general = TheChallengeGenerals->getGeneralByTemplateName(ptTest->getName());
+		Bool startsLocked = general ? !general->isStartingEnabled() : FALSE;
+		if (disallowLockedGenerals && startsLocked)
+			continue;
+
+		startSlots.push_back(i);
+	}
+#endif
+
+	for (i=0; i<MAX_SLOTS; ++i)
+	{
+		GameSlot *slot = game->getSlot(i);
+
+		if (!slot || !slot->isOccupied())
+			continue;
+
+		// clean up random factions
+		Int playerTemplateIdx = slot->getPlayerTemplate();
+		DEBUG_LOG(("Player %d has playerTemplate index %d\n", i, playerTemplateIdx));
+		while (playerTemplateIdx != PLAYERTEMPLATE_OBSERVER && (playerTemplateIdx < 0 || playerTemplateIdx >= ThePlayerTemplateStore->getPlayerTemplateCount()))
+		{
+			DEBUG_ASSERTCRASH(playerTemplateIdx == PLAYERTEMPLATE_RANDOM, ("Non-random bad playerTemplate %d in slot %d\n", playerTemplateIdx, i));
+#ifdef MORE_RANDOM
+			// our RNG is basically shit -- horribly nonrandom at the start of the sequence.
+			// get a few values at random to get rid of the dreck.
+			// there's no mathematical basis for this, but empirically, it helps a lot.
+			UnsignedInt silly = GetGameLogicRandomSeed() % 7;
+			for (Int poo = 0; poo < silly; ++poo) 
+			{
+				GameLogicRandomValue(0, 1);	// ignore result
+			}
+			Int idxIdx = GameLogicRandomValue(0, 1000) % startSlots.size();
+			playerTemplateIdx = startSlots[idxIdx];
+#else
+			playerTemplateIdx = GameLogicRandomValue(0, ThePlayerTemplateStore->getPlayerTemplateCount()-1);
+#endif
+			const PlayerTemplate* pt = ThePlayerTemplateStore->getNthPlayerTemplate(playerTemplateIdx);
+			if (!pt || pt->getStartingBuilding().isEmpty())
+			{
+#ifdef MORE_RANDOM
+				DEBUG_CRASH(("should not be possible"));
+#endif
+				playerTemplateIdx = -1; // only pick playable factions
+			}
+			else
+			{
+				DEBUG_LOG(("Setting playerTemplateIdx %d to %d\n", i, playerTemplateIdx));
+				slot->setPlayerTemplate(playerTemplateIdx);
+			}
+		}
+
+		Int colorIdx = slot->getColor();
+		if (colorIdx < 0 || colorIdx >= TheMultiplayerSettings->getNumColors())
+		{
+			DEBUG_ASSERTCRASH(colorIdx == -1, ("Non-random bad color %d in slot %d\n", colorIdx, i));
+			while (colorIdx == -1)
+			{
+				colorIdx = GameLogicRandomValue(0, TheMultiplayerSettings->getNumColors()-1);
+				if (game->isColorTaken(colorIdx))
+					colorIdx = -1;
+			}
+			DEBUG_LOG(("Setting color %d to %d\n", i, colorIdx));
+			slot->setColor(colorIdx);
+		}
+	}
+}
+
+// ------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------
+static void populateRandomStartPosition( GameInfo *game )
+{
+	if(!game)
+		return;
+
+	Int i;
+	Int numPlayers = MAX_SLOTS;
+	const MapMetaData *md = TheMapCache->findMap( game->getMap() );
+  DEBUG_ASSERTCRASH( md , ("Could not find map %s in the mapcache", game->getMap().str()));
+	if (md)
+		numPlayers = md->m_numPlayers;
+
+	// generate a map of start spot distances
+	Real startSpotDistance[MAX_SLOTS][MAX_SLOTS];
+	for (i=0; i<MAX_SLOTS; ++i)
+	{
+		for (Int j=0; j<MAX_SLOTS; ++j)
+		{
+			if (i != j && (i<numPlayers && j<numPlayers))
+			{
+				AsciiString w1, w2;
+				w1.format("Player_%d_Start", i+1);
+				w2.format("Player_%d_Start", j+1);
+				WaypointMap::const_iterator c1 = md->m_waypoints.find(w1);
+				WaypointMap::const_iterator c2 = md->m_waypoints.find(w2);
+				if (c1 == md->m_waypoints.end() || c2 == md->m_waypoints.end())
+				{
+					// couldn't find a waypoint.  must be kinda far away.
+					startSpotDistance[i][j] = 1000000.0f;
+				}
+				else
+				{
+					Coord3D p1 = c1->second;
+					Coord3D p2 = c2->second;
+					startSpotDistance[i][j] = sqrt( sqr(p1.x-p2.x) + sqr(p1.y-p2.y) );
+				}
+			}
+			else
+			{
+				startSpotDistance[i][j] = 0.0f; // not gonna need this
+			}
+		}
+	}
+
+	// see if a start spot has been chosen at all yet
+	Bool hasStartSpotBeenPicked = FALSE;
+	Bool taken[MAX_SLOTS];
+	for (i=0; i<MAX_SLOTS; ++i)
+	{
+		taken[i] = (i<numPlayers)?FALSE:TRUE;
+	}
+	for (i=0; i<MAX_SLOTS; ++i)
+	{
+		GameSlot *slot = game->getSlot(i);
+
+		if (!slot || !slot->isOccupied() || slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
+			continue;
+
+		Int posIdx = slot->getStartPos();
+		if (posIdx >= 0 || posIdx >= numPlayers)
+		{
+			hasStartSpotBeenPicked = TRUE;
+			taken[posIdx] = TRUE;
+		}
+	}
+
+#if 0  //GS  The old way puts everyone as far apart as possible.
+	// now pick non-observer spots
+	for (i=0; i<MAX_SLOTS; ++i)
+	{
+		GameSlot *slot = game->getSlot(i);
+
+		if (!slot || !slot->isOccupied() || slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
+			continue;
+
+		// clean up random start spots
+		Int posIdx = slot->getStartPos();
+		if (posIdx < 0 || posIdx >= numPlayers)
+		{
+			DEBUG_ASSERTCRASH(posIdx == -1, ("Non-random bad start position %d in slot %d\n", posIdx, i));
+			if (hasStartSpotBeenPicked)
+			{
+				// pick the farthest spot away
+				Real farthestDistance = 0.0f;
+				Int farthestIndex = -1;
+				for (posIdx = 0; posIdx < numPlayers; ++posIdx)
+				{
+					if (!taken[posIdx])
+					{
+						if (farthestIndex < 0)
+						{
+							farthestIndex = posIdx; // take this one as best if none else
+							for (Int n=0; n<numPlayers; ++n)
+							{
+								if (taken[n] && n != posIdx)
+									farthestDistance += startSpotDistance[posIdx][n];
+							}
+						}
+						else
+						{
+							Real dist = 0.0f;
+							for (Int n=0; n<numPlayers; ++n)
+							{
+								if (taken[n] && n != posIdx)
+									dist += startSpotDistance[posIdx][n];
+							}
+							if (dist > farthestDistance)
+							{
+								farthestDistance = dist;
+								farthestIndex = posIdx;
+							}
+						}
+					}
+				}
+				DEBUG_ASSERTCRASH(farthestIndex >= 0, ("Couldn't find a farthest spot!\n"));
+				slot->setStartPos(farthestIndex);
+				taken[farthestIndex] = TRUE;
+			}
+			else
+			{
+				// We're the first real spot.  Pick randomly.
+				// This while loop shouldn't be neccessary, since we're first.  Why not, though?
+				while (posIdx == -1)
+				{
+					posIdx = GameLogicRandomValue(0, numPlayers-1);
+					if (game->isStartPositionTaken(posIdx))
+						posIdx = -1;
+				}
+				DEBUG_LOG(("Setting start position %d to %d (random choice)\n", i, posIdx));
+				slot->setStartPos(posIdx);
+				taken[posIdx] = TRUE;
+				hasStartSpotBeenPicked = TRUE;
+			}
+		}
+	}
+#else  //GS  The new way puts teammates next to each other.
+	Int teamPosIdx[MAX_SLOTS];
+	for (i=0; i<MAX_SLOTS; ++i)
+		teamPosIdx[i] = -1;  //team has no starting position yet
+
+	// now pick non-observer spots
+	for (i=0; i<MAX_SLOTS; ++i)
+	{
+		GameSlot *slot = game->getSlot(i);
+
+		if (!slot || !slot->isOccupied() || slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
+			continue;  //slot not used
+
+		Int posIdx = slot->getStartPos();
+		if (posIdx >= 0  &&  posIdx < numPlayers)
+			continue;  //position already assigned
+		DEBUG_ASSERTCRASH(posIdx == -1, ("Non-random bad start position %d in slot %d\n", posIdx, i));
+
+		//choose a starting position
+		Int team = slot->getTeamNumber();
+		if( !hasStartSpotBeenPicked )
+		{	// We're the first real spot.  Pick randomly.
+			while (posIdx == -1)
+			{	// This while loop shouldn't be neccessary, since we're first.  Why not, though?
+				posIdx = GameLogicRandomValue(0, numPlayers-1);
+				if (game->isStartPositionTaken(posIdx))
+					posIdx = -1;
+			}
+			DEBUG_LOG(("Setting start position %d to %d (random choice)\n", i, posIdx));
+			hasStartSpotBeenPicked = TRUE;
+			slot->setStartPos(posIdx);
+			taken[posIdx] = TRUE;
+			if( team > -1 )
+				teamPosIdx[team] = posIdx;  //remember where this team is
+		} else
+		{	//pick teams far apart, team members close together
+			if( team < 0  ||  teamPosIdx[ team ] == -1 )  //if team None or team not yet placed
+			{	//pick position furthest from all other teams
+				Real farthestDistance = 0.0f;
+				Int farthestIndex = -1;
+				for (posIdx = 0; posIdx < numPlayers; ++posIdx)
+				{
+					if (taken[posIdx])
+						continue;  //skip occupied positions
+
+					if (farthestIndex < 0)
+					{	//take this one as best if none else
+						farthestIndex = posIdx;
+						for (Int n=0; n<numPlayers; ++n)
+						{
+							if (taken[n] && n != posIdx)
+								farthestDistance += startSpotDistance[posIdx][n];
+						}
+					}
+					else
+					{	//find empty position furthest from all taken positions
+						Real dist = 0.0f;
+						for (Int n=0; n<numPlayers; ++n)
+						{
+							if (taken[n] && n != posIdx)
+								dist += startSpotDistance[posIdx][n];
+						}
+						if (dist > farthestDistance)
+						{
+							farthestDistance = dist;
+							farthestIndex = posIdx;
+						}
+					}
+				} //for posInx
+
+				DEBUG_ASSERTCRASH(farthestIndex >= 0, ("Couldn't find a farthest spot!\n"));
+				slot->setStartPos(farthestIndex);
+				taken[farthestIndex] = TRUE;
+				if( team > -1 )
+					teamPosIdx[team] = farthestIndex;  //remember where this team is
+			} //pick farthest
+			else  //team already has a starting position
+			{	//pick position closest to team
+				Real closestDist = FLT_MAX;
+				Int  closestIdx = 0;
+				for( Int n=0;  n < numPlayers;  ++n )
+				{
+					Real dist = startSpotDistance[ teamPosIdx[team] ][n];
+					if( !taken[n]  &&  dist < closestDist )
+					{	//found a better match
+						closestDist = dist;
+						closestIdx = n;
+					}
+				} //for n
+				DEBUG_ASSERTCRASH( closestDist < FLT_MAX, ("Couldn't find a closest starting positon!\n"));
+				slot->setStartPos(closestIdx);
+				taken[closestIdx] = TRUE;
+			}
+		}
+	} //for i
+#endif 0
+
+	// now go back & assign observer spots
+	Int numPlayersInGame = 0;
+	for (i=0; i<MAX_SLOTS; ++i)
+	{
+		const GameSlot *slot = game->getConstSlot(i);
+		if (slot->isOccupied() && slot->getPlayerTemplate() != PLAYERTEMPLATE_OBSERVER)
+			++numPlayersInGame;
+	}
+	for (i=0; i<MAX_SLOTS; ++i)
+	{
+		GameSlot *slot = game->getSlot(i);
+
+		if (!slot || !slot->isOccupied())
+			continue;
+
+		if (slot->getPlayerTemplate() != PLAYERTEMPLATE_OBSERVER)
+			continue;
+
+		// clean up random start spots
+		Int posIdx = -1;
+		if (numPlayersInGame == 0)
+			posIdx = 0;
+		while (posIdx == -1)
+		{
+			posIdx = GameLogicRandomValue(0, numPlayers-1);
+			if (!game->isStartPositionTaken(posIdx))
+				posIdx = -1;
+		}
+		DEBUG_LOG(("Setting observer start position %d to %d\n", i, posIdx));
+		slot->setStartPos(posIdx);
+	}
+}
+
+// ------------------------------------------------------------------------------------------------
+/** Update the load screen progress */
+// ------------------------------------------------------------------------------------------------
+void GameLogic::updateLoadProgress( Int progress )
+{
+	
+	if( m_loadScreen )
+		m_loadScreen->update( progress );
+
+}  // end updateLoadProgress
+
+// ------------------------------------------------------------------------------------------------
+/** Delete the load screen */
+// ------------------------------------------------------------------------------------------------
+void GameLogic::deleteLoadScreen( void )
+{
+
+	if( m_loadScreen )
+	{
+
+		delete m_loadScreen;
+		m_loadScreen = NULL;
+
+	}  // end if
+
+}  // end deleteLoadScreen
+
+// ------------------------------------------------------------------------------------------------
+/** Entry point for starting a new game, the engine is already in clean state at this
+	* point and ready to load up with all the data */
+// ------------------------------------------------------------------------------------------------
+void GameLogic::startNewGame( Bool loadingSaveGame )
+{
+
+	#ifdef DUMP_PERF_STATS
+	__int64 startTime64;
+	__int64 endTime64,freq64;
+	GetPrecisionTimerTicksPerSec(&freq64);
+	GetPrecisionTimer(&startTime64);
+	#endif
+
+	setLoadingMap( TRUE );
+
+	if( loadingSaveGame == FALSE )
+	{
+
+		// record pristine map name when we're loading from the map (not a save game)
+		TheGameState->setPristineMapName( TheGlobalData->m_mapName );
+
+		//
+		// sanity, the pristine map should never start with "Save", otherwise that would be
+		// a map from the save directory
+		//
+		if (TheGameState->isInSaveDirectory(TheGlobalData->m_mapName))
+		{
+
+			DEBUG_CRASH(( "FATAL SAVE/LOAD ERROR! - Setting a pristine map name that refers to a map in the save directory.  The pristine map should always refer to the ORIGINAL map in the Maps directory, if the pristine map string is corrupt then map.ini files will not load correctly.\n" ));
+
+		}  // end if
+
+		if( m_startNewGame == FALSE )
+		{
+			/// @todo: Here is where we would look at the game mode & play an intro movie or something.
+			// Failing that, we just set the flag so the actual game can start from a uniform
+			// entry point (startNewGame() called from update()).
+			if( m_gameMode == GAME_SINGLE_PLAYER )
+			{
+
+				if(m_background)
+				{
+					m_background->destroyWindows();
+					m_background->deleteInstance();
+					m_background = NULL;
+				}
+				m_loadScreen = getLoadScreen( loadingSaveGame );
+				if(m_loadScreen)
+				{
+					TheWritableGlobalData->m_loadScreenRender = TRUE;	///< mark it so only a few select things are rendered during load
+					m_loadScreen->init(NULL);
+				}
+
+			}
+
+			m_startNewGame = TRUE;
+			return;
+
+		}  
+
+	}  // end if
+
+	m_rankLevelLimit = 1000;	// this is reset every game.
+	setDefaults( loadingSaveGame );
+	TheWritableGlobalData->m_loadScreenRender = TRUE;	///< mark it so only a few select things are rendered during load	
+	TheWritableGlobalData->m_TiVOFastMode = FALSE;	//always disable the TIVO fast-forward mode at the start of a new game.
+
+	m_showBehindBuildingMarkers = TRUE;
+	m_drawIconUI = TRUE;
+	m_showDynamicLOD = TRUE;
+	m_scriptHulkMaxLifetimeOverride = -1;
+
+	Campaign* currentCampaign = TheCampaignManager->getCurrentCampaign();
+	Bool isChallengeCampaign = m_gameMode == GAME_SINGLE_PLAYER && currentCampaign && currentCampaign->m_isChallengeCampaign;
+
+	// Fill in the game color and Factions before we do the Load Screen
+	GameInfo *game = NULL;
+	TheGameInfo = NULL;
+	Int localSlot = 0;
+	if (TheNetwork)
+	{
+		if (TheLAN)
+		{
+			DEBUG_LOG(("Starting network game\n"));
+			TheGameInfo = game = TheLAN->GetMyGame();
+		}
+		else
+		{
+			DEBUG_LOG(("Starting gamespy game\n"));
+			TheGameInfo = game = TheGameSpyGame;	/// @todo: MDC add back in after demo
+		}
+	}
+	else
+	{
+		if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_PLAYBACK)
+		{
+			TheGameInfo = game = TheRecorder->getGameInfo();
+		}
+		else if(m_gameMode == GAME_SKIRMISH)
+		{
+		  TheGameInfo = game = TheSkirmishGameInfo;
+		}
+		else if(isChallengeCampaign)
+		{
+			TheGameInfo = game = TheChallengeGameInfo;
+		}
+	}
+
+  // On a NEW game, we need to copy the superweapon restrictions from the game info to here
+  // (because TheGameInfo is not always saved and doesn't carry over to replays). On a save
+  // game, we save the superweapon restrictions in GameLogic::xfer()
+  if ( !loadingSaveGame )
+  {
+    if ( TheGameInfo )
+    {
+      m_superweaponRestriction = TheGameInfo->getSuperweaponRestriction();
+    }
+    else
+    {
+      // ??? Apparently this is legit? Oh well, use defaults
+      m_superweaponRestriction = 0;
+    }
+  }
+
+	checkForDuplicateColors( game );
+
+	Bool isSkirmishOrSkirmishReplay = FALSE;
+	if (game)
+	{
+		for (Int i=0; i<MAX_SLOTS; ++i)
+		{
+			GameSlot *slot = game->getSlot(i);
+			if (!loadingSaveGame) {
+				slot->saveOffOriginalInfo();
+			}
+			if (slot->isAI())
+			{
+				isSkirmishOrSkirmishReplay = TRUE;
+				continue;
+			}
+		}
+	} else {
+		if (m_gameMode == GAME_SINGLE_PLAYER)	{
+			if (TheSkirmishGameInfo) {
+				delete TheSkirmishGameInfo;
+				TheSkirmishGameInfo = NULL;
+			}
+		}
+	}
+
+	populateRandomSideAndColor( game );
+	populateRandomStartPosition( game );
+
+	//****************************//
+	// Start the LoadScreen Now!	//
+	//****************************//
+
+	// Get the m_loadScreen for this kind of game
+	if(!m_loadScreen)
+	{
+		m_loadScreen = getLoadScreen( loadingSaveGame );
+		if(m_loadScreen)
+		{
+			TheMouse->setVisibility(FALSE);
+			m_loadScreen->init(game);
+
+			// 
+			updateLoadProgress( LOAD_PROGRESS_START );
+		}
+	}
+	if(m_background)
+	{
+		m_background->destroyWindows();
+		m_background->deleteInstance();
+		m_background = NULL;
+	}
+	setFPMode();
+	if(TheCampaignManager)
+		TheCampaignManager->SetVictorious(FALSE);
+	m_startNewGame = FALSE;
+
+	// update the loadscreen 
+	if(m_loadScreen)
+		updateLoadProgress(LOAD_PROGRESS_POST_PARTICLE_INI_LOAD);
+
+	// reset the frame counter
+	m_frame = 0;
+
+	// before loading the map, load the map.ini file in the same directory.
+	loadMapINI( TheGlobalData->m_mapName );
+
+	// load a map
+	TheTerrainLogic->loadMap( TheGlobalData->m_mapName, false );
+	// anytime the world's size changes, must reset the partition mgr
+	//ThePartitionManager->init();
+
+	// update the loadscreen 
+	updateLoadProgress(LOAD_PROGRESS_POST_LOAD_MAP);
+
+	#ifdef DUMP_PERF_STATS
+	GetPrecisionTimer(&endTime64);
+	char Buf[256];
+	sprintf(Buf,"After terrainlogic->loadmap=%f\n",((double)(endTime64-startTime64)/(double)(freq64)*1000.0));
+		//DEBUG_LOG(("Placed a starting building for %s at waypoint %s\n", playerName.str(), waypointName.str()));
+	DEBUG_LOG(("%s", Buf));
+	#endif
+
+	Int progressCount = LOAD_PROGRESS_SIDE_POPULATION;
+	if (game)
+	{
+		 
+		if (TheGameEngine->isMultiplayerSession() || isSkirmishOrSkirmishReplay)
+		{
+			// Saves off any player, and resets the sides to 0 players so we can add the skirmish players.
+			TheSidesList->prepareForMP_or_Skirmish();
+		}
+
+		//DEBUG_LOG(("Starting LAN game with %d players\n", game->getNumPlayers()));
+		Dict d;
+		for (int i=0; i<MAX_SLOTS; ++i)
+		{
+			// Add a Side to TheSidesList
+			GameSlot *slot = game->getSlot(i);
+
+			if (!slot || !slot->isHuman())
+			{
+				m_progressComplete[i] = TRUE;
+				lastHeardFrom(i);
+			}
+
+			if (!slot || !slot->isOccupied())
+				continue;
+
+			d.clear();
+			AsciiString playerName;
+			playerName.format("player%d", i);
+			d.setAsciiString(TheKey_playerName, playerName);
+			d.setBool(TheKey_playerIsHuman, slot->isHuman());
+			d.setUnicodeString(TheKey_playerDisplayName, slot->getName());
+			const PlayerTemplate* pt;
+			if (slot->getPlayerTemplate() >= 0)
+				pt = ThePlayerTemplateStore->getNthPlayerTemplate(slot->getPlayerTemplate());
+			else
+				pt = ThePlayerTemplateStore->findPlayerTemplate( TheNameKeyGenerator->nameToKey("FactionObserver") );
+			if (pt)
+			{
+				d.setAsciiString(TheKey_playerFaction, KEYNAME(pt->getNameKey()));
+			}
+			
+			if (game->isPlayerPreorder(i))
+			{
+				d.setBool(TheKey_playerIsPreorder, TRUE);
+			}
+					
+			AsciiString enemiesString, alliesString;
+			Int team = slot->getTeamNumber();
+			DEBUG_LOG(("Looking for allies of player %d, team %d\n", i, team));
+			for(int j=0; j < MAX_SLOTS; ++j)
+			{
+				GameSlot *teamSlot = game->getSlot(j);
+				// for check to see if we're trying to add ourselves
+				if(i == j || !teamSlot->isOccupied())
+					continue;
+				
+				DEBUG_LOG(("Player %d is team %d\n", j, teamSlot->getTeamNumber()));
+
+				AsciiString teamPlayerName;
+				teamPlayerName.format("player%d", j);
+				// if our team is None, or our team is not equal to their team, 
+				// then their our enemy
+				Bool isEnemy = FALSE;
+				if(team == -1 || teamSlot->getTeamNumber() != team ) isEnemy = TRUE;
+				DEBUG_LOG(("Player %d is %s\n", j, (isEnemy)?"enemy":"ally"));
+
+				if (isEnemy)
+				{
+					if(!enemiesString.isEmpty())
+						enemiesString.concat(" ");
+					enemiesString.concat(teamPlayerName);
+				}
+				else
+				{
+					// he's on our team, add him!
+					if(!alliesString.isEmpty())
+						alliesString.concat(" ");
+					alliesString.concat(teamPlayerName);
+				}				
+			}
+			d.setAsciiString(TheKey_playerAllies, alliesString);
+			d.setAsciiString(TheKey_playerEnemies, enemiesString);
+			DEBUG_LOG(("Player %d's teams are: allies=%s, enemies=%s\n", i,alliesString.str(),enemiesString.str()));
+/*
+
+			Int colorIdx = slot->getColor();
+			if (colorIdx < 0 || colorIdx >= TheMultiplayerSettings->getNumColors())
+			{
+				DEBUG_ASSERTCRASH(colorIdx == -1, ("Non-random bad color %d in slot %d\n", colorIdx, i));
+				while (colorIdx == -1)
+				{
+					colorIdx = GameLogicRandomValue(0, TheMultiplayerSettings->getNumColors()-1);
+					if (game->isColorTaken(colorIdx))
+						colorIdx = -1;
+				}
+				DEBUG_LOG(("Setting color %d to %d\n", i, colorIdx));
+				slot->setColor(colorIdx);
+			}
+			*/
+
+			d.setInt(TheKey_playerColor, TheMultiplayerSettings->getColor(slot->getColor())->getColor());
+			d.setInt(TheKey_playerNightColor, TheMultiplayerSettings->getColor(slot->getColor())->getNightColor());
+			d.setInt(TheKey_multiplayerStartIndex, slot->getStartPos());
+//			d.setBool(TheKey_multiplayerIsLocal, slot->isLocalPlayer());
+//			d.setBool(TheKey_multiplayerIsLocal, slot->getIP() == game->getLocalIP());
+			d.setBool(TheKey_multiplayerIsLocal, slot->isHuman() && (slot->getName().compare(game->getSlot(game->getLocalSlotNum())->getName().str()) == 0));
+
+/*
+			if (slot->getIP() == game->getLocalIP())
+			{
+				localSlot = i;
+				DEBUG_LOG(("GameLogic::StartNewGame - local slot is %d\n", localSlot));
+			}
+/*
+**	Command & Conquer Generals Zero Hour(tm)
+**	Copyright 2025 Electronic Arts Inc.
+**
+**	This program is free software: you can redistribute it and/or modify
+**	it under the terms of the GNU General Public License as published by
+**	the Free Software Foundation, either version 3 of the License, or
+**	(at your option) any later version.
+**
+**	This program is distributed in the hope that it will be useful,
+**	but WITHOUT ANY WARRANTY; without even the implied warranty of
+**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+**	GNU General Public License for more details.
+**
+**	You should have received a copy of the GNU General Public License
+**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+////////////////////////////////////////////////////////////////////////////////
+//																																						//
+//  (c) 2001-2003 Electronic Arts Inc.																				//
+//																																						//
+////////////////////////////////////////////////////////////////////////////////
+
+// FILE: GameLogic.cpp ////////////////////////////////////////////////////////////////////////////
+// GameLogic class implementation
+// Author: Michael S. Booth, October 2000
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+#include "PreRTS.h"	// This must go first in EVERY cpp file int the GameEngine
+
+#include "Common/AudioAffect.h"
+#include "Common/AudioHandleSpecialValues.h"
+#include "Common/BuildAssistant.h"
 #include "Common/CRCDebug.h"
 #include "Common/GameAudio.h"
 #include "Common/GameEngine.h"
@@ -3791,18 +5211,6 @@ void GameLogic::update( void )
 	TheWeaponStore->UPDATE();	
 	TheLocomotorStore->UPDATE();	
 	TheVictoryConditions->UPDATE();
-
-#ifdef DO_COPY_PROTECTION
-	if (!isInShellGame() && isInGame())
-	{
-		if ((m_frame == 1024) && !CopyProtect::validate())
-		{
-			DEBUG_LOG(("Copy protection failed - bailing"));
-			GameMessage *msg = TheMessageStream->appendMessage(GameMessage::MSG_SELF_DESTRUCT);
-			msg->appendBooleanArgument(FALSE);
-		}
-	}
-#endif
 
 	{
 		//Handle disabled statii (and re-enable objects once frame matches)

@@ -42,14 +42,13 @@
 // USER INCLUDES //////////////////////////////////////////////////////////////
 #include "WinMain.h"
 #include "Lib/BaseType.h"
-#include "Common/CopyProtection.h"
+// Copy protection has been removed
 #include "Common/CriticalSection.h"
 #include "Common/GlobalData.h"
 #include "Common/GameEngine.h"
 #include "Common/GameSounds.h"
 #include "Common/Debug.h"
 #include "Common/GameMemory.h"
-#include "Common/SafeDisc/CdaPfn.h"
 #include "Common/StackDump.h"
 #include "Common/MessageStream.h"
 #include "Common/Registry.h"
@@ -753,27 +752,6 @@ static Bool initializeAppWindows( HINSTANCE hInstance, Int nCmdShow, Bool runWin
 
 }  // end initializeAppWindows
 
-void munkeeFunc(void);
-CDAPFN_DECLARE_GLOBAL(munkeeFunc, CDAPFN_OVERHEAD_L5, CDAPFN_CONSTRAINT_NONE);
-void munkeeFunc(void)
-{
-	CDAPFN_ENDMARK(munkeeFunc);
-}
-
-void checkProtection(void)
-{
-#ifdef _INTERNAL
-	__try
-	{
-		munkeeFunc();
-	}
-	__except(EXCEPTION_EXECUTE_HANDLER)
-	{
-		exit(0); // someone is messing with us.
-	}
-#endif
-}
-
 // strtrim ====================================================================
 /** Trim leading and trailing whitespace from a character string (in place). */
 //=============================================================================
@@ -871,12 +849,6 @@ static CriticalSection critSec1, critSec2, critSec3, critSec4, critSec5;
 Int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
                       LPSTR lpCmdLine, Int nCmdShow )
 {
-	checkProtection();
-
-#ifdef _PROFILE
-  Profile::StartRange("init");
-#endif
-
 	try {
 
 		_set_se_translator( DumpExceptionInfo ); // Hook that allows stack trace.

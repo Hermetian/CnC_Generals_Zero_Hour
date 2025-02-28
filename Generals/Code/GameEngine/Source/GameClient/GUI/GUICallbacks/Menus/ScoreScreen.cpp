@@ -53,7 +53,6 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file int the GameEngine
 
 #include "Common/BattleHonors.h"
-#include "Common/CopyProtection.h"
 #include "Common/GameEngine.h"
 #include "Common/GameLOD.h"
 #include "Common/GameState.h"
@@ -685,10 +684,9 @@ void initSinglePlayer( void )
 
 void finishSinglePlayerInit( void )
 {
+	// Copy protection has been removed entirely
 	Bool copyProtectOK = TRUE;
-#ifdef DO_COPY_PROTECTION
-	copyProtectOK = CopyProtect::validate();
-#endif
+	
 	if(copyProtectOK && TheCampaignManager->isVictorious())
 	{
 		TheCampaignManager->gotoNextMission();

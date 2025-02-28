@@ -19,170 +19,92 @@
 // DatGen.cpp : Defines the entry point for the application.
 //
 
-#include <windows.h>
-#include <assert.h>
-#include <stdlib.h>
 #include <stdio.h>
-#include "bfish.h"
-#include "SafeDisk\CdaPfn.h"
-#include <Debug\DebugPrint.h>
+#include <stdlib.h>
+#include <limits.h>
+#include <memory.h>
+#include <assert.h>
+#include <windows.h>
+#include <io.h>
+#include "BFish.h"
 
-void __cdecl doIt(void);
-
-CDAPFN_DECLARE_GLOBAL(doIt, CDAPFN_OVERHEAD_L5, CDAPFN_CONSTRAINT_NONE);
-
-static void doIt(void)
+void doIt(void)
 {
-	// Generate passkey
+	printf("Dat Generator Tool\n\n");
+
+	// Get the passkey input
 	char passKey[128];
-	passKey[0] = '\0';
-	unsigned char installPath[MAX_PATH] = "";
+	printf("Enter pass key: ");
+	gets(passKey);
 
-	// Get game information
-	HKEY hKey;
-	bool usesHKeycurrentUser = false;
-	LONG result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, "Software\\Electronic Arts\\EA Games\\Command and Conquer Generals Zero Hour", 0, KEY_READ, &hKey);
-	if (result != ERROR_SUCCESS)
-	{
-		result = RegOpenKeyEx(HKEY_CURRENT_USER, "Software\\Electronic Arts\\EA Games\\Command and Conquer Generals Zero Hour", 0, KEY_READ, &hKey);
-		usesHKeycurrentUser = true;
-	}
-	assert((result == ERROR_SUCCESS) && "Failed to open game registry key");
+	// Get the data input
+	char dataStr[1024];
+	printf("Enter the data to encode: ");
+	gets(dataStr);
 
-	if (result != ERROR_SUCCESS)
+	// Get the output file
+	char outputFile[MAX_PATH];
+	printf("Enter output file [Generals.dat]: ");
+	char* result = gets(outputFile);
+	if (result == NULL || strlen(outputFile) == 0)
 	{
-		return;
+		strcpy(outputFile, "Generals.dat");
 	}
 
-	// Retrieve install path
-	DWORD type;
-	DWORD sizeOfBuffer = sizeof(installPath);
-	result = RegQueryValueEx(hKey, "InstallPath", NULL, &type, installPath, &sizeOfBuffer);
+	// Time to crunch the data
+	printf("Encoding data...\n");
 
-	assert((result == ERROR_SUCCESS) && "Failed to obtain game install path!");
-	assert((strlen((const char*)installPath) > 0) && "Game install path invalid!");
-	DebugPrint("Game install path: %s\n", installPath);
+	// Get the length of the data
+	int dataLen = strlen(dataStr);
 
-	// Retrieve Hard drive S/N
-	char drive[8];
-	_splitpath((const char*)installPath, drive, NULL, NULL, NULL);
-	strcat(drive, "\\");
-
-	DWORD volumeSerialNumber = 0;
-	DWORD maxComponentLength;
-	DWORD fileSystemFlags;
-	BOOL volInfoSuccess = GetVolumeInformation((const char*)drive, NULL, 0,
-		                    &volumeSerialNumber, &maxComponentLength, &fileSystemFlags, NULL, 0);
-
-	if (volInfoSuccess == FALSE)
+	// Compute the length of the key
+	int keyLen = strlen(passKey);
+	if (keyLen > BlowfishEngine::MAX_KEY_LENGTH)
 	{
-		PrintWin32Error("***** GetVolumeInformation() Failed!");
+		keyLen = BlowfishEngine::MAX_KEY_LENGTH;
 	}
 
-	DebugPrint("Drive Serial Number: %lx\n", volumeSerialNumber);
+	// Compute required buffer size (rounded up to 8 byte boundary)
+	int inBufferSize = ((dataLen / 8) + 1) * 8;
 
-	// Add hard drive serial number portion
-	char volumeSN[16];
-	sprintf(volumeSN, "%lx-", volumeSerialNumber);
-	strcat(passKey, volumeSN);
+	printf("Data length: %d bytes\n", dataLen);
+	printf("Rounded length: %d bytes\n", inBufferSize);
 
-	// Retrieve game serial #
-	unsigned char gameSerialNumber[64];
-	gameSerialNumber[0] = '\0';
-	sizeOfBuffer = sizeof(gameSerialNumber);
-	if (usesHKeycurrentUser)
-	{
-		result = RegOpenKeyEx(HKEY_CURRENT_USER, "Software\\Electronic Arts\\EA Games\\Command and Conquer Generals Zero Hour\\ergc", 0, KEY_READ, &hKey);
-	}
-	else
-	{
-		result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, "Software\\Electronic Arts\\EA Games\\Command and Conquer Generals Zero Hour\\ergc", 0, KEY_READ, &hKey);
-	}
-	assert((result == ERROR_SUCCESS) && "Failed to open game serial registry key");
+	// Create the input/output buffers
+	char* inBuffer = new char[inBufferSize];
+	char* outBuffer = new char[inBufferSize];
 
-	if (result == ERROR_SUCCESS)
-	{
-		result = RegQueryValueEx(hKey, "", NULL, &type, gameSerialNumber, &sizeOfBuffer);
-		assert((result == ERROR_SUCCESS) && "Failed to obtain game serial number!");
-		assert((strlen((const char*)gameSerialNumber) > 0) && "Game serial number invalid!");
-	}
+	// Initialize the buffers
+	memset(inBuffer, 0, inBufferSize);
+	memset(outBuffer, 0, inBufferSize);
 
-	DebugPrint("Game serial number: %s\n", gameSerialNumber);
+	// Copy the data into the input buffer
+	memcpy(inBuffer, dataStr, dataLen);
 
-	RegCloseKey(hKey);
-
-	// Add game serial number portion
-	strcat(passKey, (char*)gameSerialNumber);
-
-	// Obtain windows product ID
-	result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, "Software\\Microsoft\\Windows\\CurrentVersion", 0, KEY_READ, &hKey);
-	assert((result == ERROR_SUCCESS) && "Failed to open windows registry key!");
-
-	if (result == ERROR_SUCCESS)
-	{
-		// Retrieve Windows Product ID
-		unsigned char winProductID[64];
-		winProductID[0] = '\0';
-
-		DWORD type;
-		DWORD sizeOfBuffer = sizeof(winProductID);
-		result = RegQueryValueEx(hKey, "ProductID", NULL, &type, winProductID, &sizeOfBuffer);
-
-		assert((result == ERROR_SUCCESS) && "Failed to obtain windows product ID!");
-		assert((strlen((const char*)winProductID) > 0) && "Invalid windows product ID");
-
-		DebugPrint("Windows Product ID: %s\n", winProductID);
-
-		RegCloseKey(hKey);
-
-		// Add windows product ID portion
-		strcat(passKey, "-");
-		strcat(passKey, (char*)winProductID);
-	}
-
-	DebugPrint("Retrieved PassKey: %s\n", passKey);
-
-	const char *plainText = "Play the \"Command & Conquer: Generals\" Multiplayer Test.";
-	int textLen = strlen(plainText);
-	char cypherText[128];
-
-	DebugPrint("Retrieved PassKey: %s\n", passKey);
-
-	// Decrypt protected data into the memory mapped file
+	// Setup the encryption
 	BlowfishEngine blowfish;
-	int len = strlen(passKey);
-	if (len > BlowfishEngine::MAX_KEY_LENGTH)
-		len = BlowfishEngine::MAX_KEY_LENGTH;
-	blowfish.Submit_Key(passKey, len);
+	blowfish.Submit_Key(passKey, keyLen);
+	blowfish.Encrypt(inBuffer, inBufferSize, outBuffer);
 
-	blowfish.Encrypt(plainText, textLen, cypherText);
-	cypherText[textLen] = 0;
-	DebugPrint("Encrypted data: %s\n", cypherText);
-
-	DebugPrint("Install dir = '%s'\n", installPath);
-
-	char *lastBackslash = strrchr((char *)installPath, '\\');
-	if (lastBackslash)
-		*lastBackslash = 0; // strip of \\game.exe from install path
-
-	strcat((char *)installPath, "\\Generals.dat");
-
-	DebugPrint("DAT file = '%s'\n", installPath);
-
-	FILE *fp = fopen((char *)installPath, "wb");
-	if (fp)
+	// Write to file
+	FILE* outFile = fopen(outputFile, "wb");
+	if (outFile == NULL)
 	{
-		fwrite(cypherText, textLen, 1, fp);
-		fclose(fp);
+		printf("ERROR creating output file!\n");
+		exit(1);
 	}
 
-	CDAPFN_ENDMARK(doIt);
+	fwrite(outBuffer, inBufferSize, 1, outFile);
+	fclose(outFile);
+
+	// Cleanup
+	delete [] inBuffer;
+	delete [] outBuffer;
+
+	printf("Done! Created: %s\n", outputFile);
 }
 
-int APIENTRY WinMain(HINSTANCE hInstance,
-                     HINSTANCE hPrevInstance,
-                     LPSTR     lpCmdLine,
-                     int       nCmdShow)
+int main(int argc, char* argv[])
 {
 	doIt();
 

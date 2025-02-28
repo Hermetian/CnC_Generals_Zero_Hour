@@ -32,10 +32,11 @@
 #ifndef COPYPROTECTION_H
 #define COPYPROTECTION_H
 
-// Comment out the following line to disable copy protection checks
-// #define DO_COPY_PROTECTION
+// Copy protection has been completely removed from the codebase.
+// The original SafeDisk integration and all related code has been removed
+// as part of the open-source release.
 
-// Simple implementation that always allows the game to run
+// Dummy implementation that always allows the game to run
 class CopyProtect
 {
 public:

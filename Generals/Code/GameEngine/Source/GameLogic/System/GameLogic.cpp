@@ -32,7 +32,6 @@
 #include "Common/AudioAffect.h"
 #include "Common/AudioHandleSpecialValues.h"
 #include "Common/BuildAssistant.h"
-#include "Common/CopyProtection.h"
 #include "Common/CRCDebug.h"
 #include "Common/GameAudio.h"
 #include "Common/GameEngine.h"
@@ -3261,17 +3260,7 @@ void GameLogic::update( void )
 	TheLocomotorStore->UPDATE();	
 	TheVictoryConditions->UPDATE();
 
-#ifdef DO_COPY_PROTECTION
-	if (!isInShellGame() && isInGame())
-	{
-		if ((m_frame == 1024) && !CopyProtect::validate())
-		{
-			DEBUG_LOG(("Copy protection failed - bailing"));
-			GameMessage *msg = TheMessageStream->appendMessage(GameMessage::MSG_SELF_DESTRUCT);
-			msg->appendBooleanArgument(FALSE);
-		}
-	}
-#endif
+	// Copy protection has been removed entirely
 
 	{
 		//Handle disabled statii (and re-enable objects once frame matches)

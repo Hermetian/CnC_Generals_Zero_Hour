@@ -1,0 +1,15 @@
+# Cursor IDE specific files
+.cursor/
+.cursor-*
+*.cursor-*
+cursor.json
+
+# Temporary download directory
+/temp_downloads/
+
+# Other common files to ignore
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*~ 

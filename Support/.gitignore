@@ -1,0 +1,45 @@
+# Build artifacts
+build/
+build_output/
+game_backups/
+bin/
+obj/
+Debug/
+Release/
+x64/
+Win32/
+
+# Temporary files
+temp_downloads/
+*.tmp
+*.log
+
+# IDE files
+.vs/
+.vscode/
+*.user
+*.suo
+*.sln.docstates
+*.vcxproj.filters
+
+# Generated files
+CMakeFiles/
+cmake_install.cmake
+CMakeCache.txt
+
+# Keep all source code, scripts, and documentation
+!*.cpp
+!*.h
+!*.c
+!*.hpp
+!*.bat
+!*.sh
+!*.md
+!*.txt
+!*.cmake
+
+# Keep our build system files
+!build_config.bat
+!build_all.bat
+!replace_files.bat
+!BUILD_README.md 

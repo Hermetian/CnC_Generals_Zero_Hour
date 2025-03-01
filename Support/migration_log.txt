@@ -1,0 +1,18 @@
+Migration started at Fri Feb 28 16:04:05 CST 2025
+Moving Max4SDK files...
+Max4SDK files moved successfully!
+Moving DirectX files...
+DirectX files moved successfully!
+Moving STLport files...
+STLport files moved successfully!
+Moving compression libraries...
+ZLib files moved successfully!
+LZH files moved successfully!
+Moving WPAudio files...
+WPAudio files moved successfully!
+Migration completed at Fri Feb 28 16:04:05 CST 2025
+
+Next steps:
+1. Update build configuration to point to the new locations
+2. Test the build process with the new structure
+3. After confirming everything works, remove the old Code directory

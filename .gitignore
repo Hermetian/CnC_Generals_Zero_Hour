@@ -18,3 +18,115 @@ Thumbs.db
 *.swp
 *.bak
 *~ 
+
+# Build outputs
+*.o
+*.obj
+*.lib
+*.dll
+*.exe
+*.so
+*.dylib
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.a
+*.la
+*.lo
+*.manifest
+*.res
+*.iobj
+*.ipdb
+
+# Visual Studio temporary files
+.vs/
+*.aps
+*.ncb
+*.opendb
+*.opensdf
+*.sdf
+*.cachefile
+*.VC.db
+*.VC.VC.opendb
+ipch/
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build logs and directories
+*.log
+*.tlog
+bin/
+Debug/
+Release/
+x64/
+x86/
+Win32/
+Win64/
+[Bb]uild/
+[Oo]ut/
+
+# Dependency directories
+packages/
+
+# Backup files
+*~
+*.bak
+*.backup
+*.swp
+*.tmp
+
+# OS specific
+## Windows
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+## macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+## Linux
+*~
+
+# OpenAL related
+soft_oal.dll
+# OpenAL SDK files (don't commit these third-party files)
+/OpenAL/docs/
+/OpenAL/samples/
+/OpenAL/utils/
+/OpenAL/include/
+/OpenAL/libs/
+/OpenAL/redist/
+# Only commit our specific modifications to the OpenAL include files if needed
+!/OpenAL/include/al.h
+!/OpenAL/include/alc.h
+!/OpenAL/include/efx.h
+# Specific sample programs we don't need
+/OpenAL/playoggvorbis/
+/OpenAL/playwave/
+/OpenAL/capture/
+/OpenAL/alstream/
+
+# Potential sensitive/large files
+*.zip
+*.7z
+*.rar
+*.tar.gz
+*.wav
+*.mp3
+*.ogg
+
+# Game specific
+Generals/bin/backup/ 

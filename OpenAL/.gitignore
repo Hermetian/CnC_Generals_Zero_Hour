@@ -1,0 +1,39 @@
+# Ignore everything in this directory
+*
+
+# But allow these directories to be discovered (though their contents will be ignored)
+!.gitignore
+!include/
+!libs/
+!redist/
+
+# In the include directory, only keep necessary header files
+include/*
+!include/al.h
+!include/alc.h
+!include/efx.h
+!include/xram.h
+!include/efx-creative.h
+!include/EFX-Util.h
+
+# In the libs directory, only keep the necessary .lib files
+libs/*
+!libs/Win32/
+!libs/Win64/
+libs/Win32/*
+libs/Win64/*
+!libs/Win32/OpenAL32.lib
+!libs/Win64/OpenAL32.lib
+
+# In the redist directory, only keep the installer
+redist/*
+!redist/oalinst.exe
+
+# Explicitly ignore these directories
+/docs/
+/samples/
+/utils/
+/playoggvorbis/
+/playwave/
+/capture/
+/alstream/ 

@@ -4,6 +4,11 @@
 *.cursor-*
 cursor.json
 
+# VS Code specific files
+.vscode/
+*.code-workspace
+.history/
+
 # Temporary download directory
 /temp_downloads/
 
